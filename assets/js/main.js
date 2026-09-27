@@ -216,7 +216,7 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
 
   function tick(now) {
     if (!playing) return;
-    elapsed += (now - lastTick) / 1000;
+    elapsed += Math.max(0, now - lastTick) / 1000;
     lastTick = now;
     if (elapsed >= TRACKS[index].duration) {
       change(1);
@@ -285,4 +285,232 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
 
   elapsed = 64;
   render();
+})();
+
+/* ---------- 3D phone: drag / swipe / arrow keys to spin, with inertia and an idle sway ---------- */
+
+(function phone3d() {
+  const wrap = document.querySelector("[data-phone3d]");
+  const rig = wrap && wrap.querySelector(".phone3d");
+  if (!rig) return;
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const REST_X = 6;
+  const REST_Y = -18;
+  const IDLE_AFTER = 4000;
+  const DRAG_THRESHOLD = 4;
+
+  // Build the stacked rings that give the rounded edge and camera plateau their depth.
+  const depth = parseFloat(getComputedStyle(wrap).getPropertyValue("--d")) || 30;
+  const edge = rig.querySelector(".phone-edge");
+  const RINGS = 15;
+  const tones = ["#b9b9bf", "#8e8e94", "#6c6c71", "#5d5d62", "#6c6c71", "#8e8e94", "#b9b9bf"];
+  for (let i = 0; i < RINGS; i++) {
+    const f = i / (RINGS - 1);
+    const ring = document.createElement("i");
+    ring.className = "ring";
+    ring.style.setProperty("--z", `${(f - 0.5) * (depth - 2)}px`);
+    ring.style.setProperty("--ring", tones[Math.round(f * (tones.length - 1))]);
+    edge.prepend(ring);
+  }
+  const cam = rig.querySelector(".phone-cam");
+  [1, 2, 3].forEach((n) => {
+    const ring = document.createElement("i");
+    ring.className = "phone-cam-ring";
+    ring.setAttribute("aria-hidden", "true");
+    ring.style.setProperty("--z", `${-depth / 2 - n}px`);
+    rig.insertBefore(ring, cam);
+  });
+
+  let rx = REST_X;
+  let ry = REST_Y;
+  let vx = 0;
+  let vy = 0;
+  let dragging = false;
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  let lastX = 0;
+  let lastY = 0;
+  let lastMove = 0;
+  let moved = false;
+  let suppressClick = false;
+  let lastInteraction = -Infinity;
+  let visible = true;
+  let raf = 0;
+  let clock = 0;
+
+  const rad = (d) => (d * Math.PI) / 180;
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const L = [-0.42, -0.5, 0.76]; // light from upper left, in front
+
+  // Brightness of a face with outward normal n after rotateX(rx) rotateY(ry).
+  function lit(n, cx, sx, cy, sy) {
+    const x1 = n[0] * cy + n[2] * sy;
+    const y1 = n[1];
+    const z1 = -n[0] * sy + n[2] * cy;
+    const y2 = y1 * cx - z1 * sx;
+    const z2 = y1 * sx + z1 * cx;
+    return (0.55 + 0.75 * Math.max(0, x1 * L[0] + y2 * L[1] + z2 * L[2])).toFixed(3);
+  }
+
+  function apply() {
+    const cy = Math.cos(rad(ry));
+    const sy = Math.sin(rad(ry));
+    const cx = Math.cos(rad(rx));
+    const sx = Math.sin(rad(rx));
+    const turn = ((((ry + 180) % 360) + 360) % 360) - 180;
+    rig.style.setProperty("--rx", `${rx.toFixed(2)}deg`);
+    rig.style.setProperty("--ry", `${ry.toFixed(2)}deg`);
+    rig.style.setProperty("--sheen", `${clamp(50 - turn * 0.9, -40, 140).toFixed(1)}%`);
+    rig.style.setProperty("--lit-l", lit([-1, 0, 0], cx, sx, cy, sy));
+    rig.style.setProperty("--lit-r", lit([1, 0, 0], cx, sx, cy, sy));
+    rig.style.setProperty("--lit-t", lit([0, -1, 0], cx, sx, cy, sy));
+    rig.style.setProperty("--lit-b", lit([0, 1, 0], cx, sx, cy, sy));
+    wrap.style.setProperty("--shadow-sx", (0.45 + 0.55 * Math.abs(cy)).toFixed(3));
+  }
+
+  function frame(now) {
+    raf = 0;
+    const dt = Math.min(0.05, clock ? (now - clock) / 1000 : 0.016);
+    clock = now;
+    const calm = reduceMotion.matches;
+
+    if (!dragging) {
+      if (!calm && (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01)) {
+        ry += vy * dt * 60;
+        rx = clamp(rx + vx * dt * 60, -35, 35);
+        const decay = Math.pow(0.94, dt * 60);
+        vx *= decay;
+        vy *= decay;
+      } else {
+        vx = vy = 0;
+        const idle = now - lastInteraction > IDLE_AFTER;
+        const t = now / 1000;
+        const swayY = calm || !idle ? 0 : Math.sin(t * 0.55) * 12;
+        const swayX = calm || !idle ? 0 : Math.sin(t * 0.4) * 3;
+        const ease = 1 - Math.pow(idle ? 0.975 : 0.93, dt * 60);
+        rx += (REST_X + swayX - rx) * ease;
+        if (idle) {
+          // Settle on the nearest front-facing pose, never unwind whole turns.
+          const base = Math.round((ry - REST_Y) / 360) * 360 + REST_Y;
+          ry += (base + swayY - ry) * ease;
+        }
+      }
+    }
+    apply();
+    schedule();
+  }
+
+  function schedule() {
+    if (raf || !visible || document.hidden) return;
+    if (reduceMotion.matches && !dragging && Math.abs(rx - REST_X) < 0.05) return;
+    raf = requestAnimationFrame(frame);
+  }
+
+  function touch() {
+    lastInteraction = performance.now();
+    wrap.classList.add("has-spun");
+  }
+
+  wrap.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || dragging) return;
+    pointerId = e.pointerId;
+    startX = lastX = e.clientX;
+    startY = lastY = e.clientY;
+    lastMove = performance.now();
+    moved = false;
+    vx = vy = 0;
+  });
+
+  wrap.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId) return;
+    if (!dragging) {
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_THRESHOLD) return;
+      dragging = moved = true;
+      wrap.classList.add("is-dragging");
+      try { wrap.setPointerCapture(pointerId); } catch (_) { /* pointer already gone */ }
+    }
+    const now = performance.now();
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    const frames = Math.max(1, (now - lastMove) / 16.7);
+    ry += dx * 0.5;
+    rx = clamp(rx - dy * 0.3, -35, 35);
+    vy = (dx * 0.5) / frames;
+    vx = (-dy * 0.3) / frames;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    lastMove = now;
+    touch();
+    schedule();
+  });
+
+  function endDrag(e) {
+    if (e.pointerId !== pointerId) return;
+    pointerId = null;
+    if (!dragging) return;
+    dragging = false;
+    wrap.classList.remove("is-dragging");
+    if (performance.now() - lastMove > 80) vx = vy = 0; // released after holding still
+    suppressClick = moved;
+    touch();
+    schedule();
+  }
+  wrap.addEventListener("pointerup", endDrag);
+  wrap.addEventListener("pointercancel", endDrag);
+  wrap.addEventListener("lostpointercapture", endDrag);
+
+  // A drag that started on a player button should not also press it.
+  wrap.addEventListener(
+    "click",
+    (e) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true
+  );
+  wrap.addEventListener("dragstart", (e) => e.preventDefault());
+
+  wrap.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button")) return;
+    ry = Math.round((ry - REST_Y) / 360) * 360 + REST_Y;
+    rx = REST_X;
+    vx = vy = 0;
+    touch();
+    schedule();
+  });
+
+  wrap.addEventListener("keydown", (e) => {
+    if (e.target !== wrap) return;
+    const step = e.shiftKey ? 45 : 15;
+    const keys = { ArrowLeft: [0, -step], ArrowRight: [0, step], ArrowUp: [step / 2, 0], ArrowDown: [-step / 2, 0] };
+    const k = keys[e.key];
+    if (!k) return;
+    e.preventDefault();
+    rx = clamp(rx + k[0], -35, 35);
+    ry += k[1];
+    vx = vy = 0;
+    touch();
+    apply();
+    schedule();
+  });
+
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      clock = 0;
+      schedule();
+    }).observe(wrap);
+  }
+  document.addEventListener("visibilitychange", () => {
+    clock = 0;
+    schedule();
+  });
+  reduceMotion.addEventListener?.("change", schedule);
+
+  apply();
+  schedule();
 })();

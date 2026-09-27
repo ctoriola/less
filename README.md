@@ -6,7 +6,7 @@ Static, dependency-free website for Lord, Saint, Sinner, an independent music co
 
 | File | Page |
 | --- | --- |
-| `index.html` | Home: hero with an interactive phone player, roster, featured release, "Listen everywhere" streaming links, services, shows, journal, newsletter |
+| `index.html` | Home: hero with an interactive 3D phone player (drag, swipe or arrow keys to spin it), roster, featured release, "Listen everywhere" streaming links, services, shows, journal, newsletter |
 | `about.html` | Story, the logo and what it means, values, timeline, leadership team |
 | `artists.html` | Roster with genre filter and artist spotlight |
 | `releases.html` | Latest release tracklist, filterable catalogue, playlists |
