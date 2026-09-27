@@ -268,7 +268,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .phone3d {
   position: relative; width: var(--w); height: var(--h);
   transform-style: preserve-3d;
-  transform: rotateX(var(--rx, 6deg)) rotateY(var(--ry, -18deg));
+  transform: rotateX(var(--rx, 28deg)) rotateY(var(--ry, 22deg));
 }
 .phone {
   position: relative; width: var(--w); height: var(--h); border-radius: var(--r); padding: 11px;

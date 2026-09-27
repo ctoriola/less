@@ -287,7 +287,7 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
   render();
 })();
 
-/* ---------- 3D phone: drag / swipe / arrow keys to spin, with inertia and an idle sway ---------- */
+/* ---------- 3D phone: holds a tilted pose, turns right as the page scrolls, drag / swipe / arrow keys to spin ---------- */
 
 (function phone3d() {
   const wrap = document.querySelector("[data-phone3d]");
@@ -295,8 +295,11 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
   if (!rig) return;
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const REST_X = 6;
-  const REST_Y = -18;
+  const REST_X = 28;
+  const REST_Y = 22;
+  const MIN_X = -35;
+  const MAX_X = 60;
+  const SCROLL_TURN = 360; // degrees turned on the way from mid-screen to the top of the viewport
   const IDLE_AFTER = 4000;
   const DRAG_THRESHOLD = 4;
 
@@ -339,6 +342,7 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
   let visible = true;
   let raf = 0;
   let clock = 0;
+  let spin = 0; // scroll-driven turn, added on top of the pose
 
   const rad = (d) => (d * Math.PI) / 180;
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -354,14 +358,25 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
     return (0.55 + 0.75 * Math.max(0, x1 * L[0] + y2 * L[1] + z2 * L[2])).toFixed(3);
   }
 
+  // Hold the pose until the phone reaches the middle of the screen, then turn right
+  // until it has scrolled up to the top of the viewport.
+  function scrollTarget() {
+    if (reduceMotion.matches) return 0;
+    const half = window.innerHeight / 2;
+    const center = wrap.getBoundingClientRect().top + window.scrollY + rig.offsetHeight / 2;
+    const start = Math.max(0, center - half);
+    return clamp((window.scrollY - start) / Math.max(1, center - start), 0, 1) * SCROLL_TURN;
+  }
+
   function apply() {
-    const cy = Math.cos(rad(ry));
-    const sy = Math.sin(rad(ry));
+    const y = ry + spin;
+    const cy = Math.cos(rad(y));
+    const sy = Math.sin(rad(y));
     const cx = Math.cos(rad(rx));
     const sx = Math.sin(rad(rx));
-    const turn = ((((ry + 180) % 360) + 360) % 360) - 180;
+    const turn = ((((y - REST_Y + 180) % 360) + 360) % 360) - 180;
     rig.style.setProperty("--rx", `${rx.toFixed(2)}deg`);
-    rig.style.setProperty("--ry", `${ry.toFixed(2)}deg`);
+    rig.style.setProperty("--ry", `${y.toFixed(2)}deg`);
     rig.style.setProperty("--sheen", `${clamp(50 - turn * 0.9, -40, 140).toFixed(1)}%`);
     rig.style.setProperty("--lit-l", lit([-1, 0, 0], cx, sx, cy, sy));
     rig.style.setProperty("--lit-r", lit([1, 0, 0], cx, sx, cy, sy));
@@ -375,36 +390,44 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
     const dt = Math.min(0.05, clock ? (now - clock) / 1000 : 0.016);
     clock = now;
     const calm = reduceMotion.matches;
+    let settled = !dragging;
 
     if (!dragging) {
       if (!calm && (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01)) {
         ry += vy * dt * 60;
-        rx = clamp(rx + vx * dt * 60, -35, 35);
+        rx = clamp(rx + vx * dt * 60, MIN_X, MAX_X);
         const decay = Math.pow(0.94, dt * 60);
         vx *= decay;
         vy *= decay;
+        settled = false;
       } else {
         vx = vy = 0;
         const idle = now - lastInteraction > IDLE_AFTER;
-        const t = now / 1000;
-        const swayY = calm || !idle ? 0 : Math.sin(t * 0.55) * 12;
-        const swayX = calm || !idle ? 0 : Math.sin(t * 0.4) * 3;
-        const ease = 1 - Math.pow(idle ? 0.975 : 0.93, dt * 60);
-        rx += (REST_X + swayX - rx) * ease;
+        const ease = 1 - Math.pow(idle ? 0.96 : 0.93, dt * 60);
+        rx += (REST_X - rx) * ease;
+        if (Math.abs(REST_X - rx) > 0.05) settled = false;
+        else rx = REST_X;
         if (idle) {
-          // Settle on the nearest front-facing pose, never unwind whole turns.
+          // Return to the resting pose by the shortest way, never unwinding whole turns.
           const base = Math.round((ry - REST_Y) / 360) * 360 + REST_Y;
-          ry += (base + swayY - ry) * ease;
-        }
+          ry += (base - ry) * ease;
+          if (Math.abs(base - ry) > 0.05) settled = false;
+          else ry = base;
+        } else if (lastInteraction > 0) settled = false; // wait out the idle delay
       }
     }
+
+    const target = scrollTarget();
+    spin += (target - spin) * (calm ? 1 : 1 - Math.pow(0.85, dt * 60));
+    if (Math.abs(target - spin) > 0.05) settled = false;
+    else spin = target;
+
     apply();
-    schedule();
+    if (!settled) schedule();
   }
 
   function schedule() {
     if (raf || !visible || document.hidden) return;
-    if (reduceMotion.matches && !dragging && Math.abs(rx - REST_X) < 0.05) return;
     raf = requestAnimationFrame(frame);
   }
 
@@ -436,7 +459,7 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
     const dy = e.clientY - lastY;
     const frames = Math.max(1, (now - lastMove) / 16.7);
     ry += dx * 0.5;
-    rx = clamp(rx - dy * 0.3, -35, 35);
+    rx = clamp(rx - dy * 0.3, MIN_X, MAX_X);
     vy = (dx * 0.5) / frames;
     vx = (-dy * 0.3) / frames;
     lastX = e.clientX;
@@ -490,7 +513,7 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
     const k = keys[e.key];
     if (!k) return;
     e.preventDefault();
-    rx = clamp(rx + k[0], -35, 35);
+    rx = clamp(rx + k[0], MIN_X, MAX_X);
     ry += k[1];
     vx = vy = 0;
     touch();
@@ -510,7 +533,10 @@ document.querySelectorAll("[data-year]").forEach((el) => (el.textContent = new D
     schedule();
   });
   reduceMotion.addEventListener?.("change", schedule);
+  window.addEventListener("scroll", schedule, { passive: true });
+  window.addEventListener("resize", schedule);
 
+  spin = scrollTarget();
   apply();
   schedule();
 })();
